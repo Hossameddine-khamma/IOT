@@ -2,6 +2,30 @@
 #include <iostream>
 #include <chrono>
 
+const String strState[] = {
+    "INIT_SEUIL",
+    "WAITING",
+    "BIT_1",
+    "BIT_2",
+    "BIT_3",
+    "DATA",
+    "PARITE"};
+
+String stateToString(int state)
+{
+  return strState[state];
+}
+
+enum State
+{
+  INIT_SEUIL,
+  WAITING,
+  BIT_1,
+  BIT_2,
+  BIT_3,
+  DATA,
+  PARITE
+};
 
 class Timer
 {
@@ -28,10 +52,48 @@ unsigned long Timer::_elapsed()
   return millis() - startTime;
 }
 
-const int pininputlaser = 34;
+class FSM
+{
+  State mCurrentState;
 
+public:
+  FSM();
+
+  void checkState(State source, State target, bool condition = true);
+
+  State getCurrentState();
+};
+
+FSM::FSM() : mCurrentState(INIT_SEUIL)
+{
+}
+
+State FSM::getCurrentState()
+{
+  return mCurrentState;
+}
+
+void FSM::checkState(State source, State target, bool condition)
+{
+  if (source == mCurrentState && condition)
+  {
+    mCurrentState = target;
+  }
+}
+
+const int pininputlaser = 34;
+FSM fsm;
 Timer timer = Timer();
-Timer* timerPtr = &timer;
+Timer *timerPtr = &timer;
+
+char dataTrame[5];
+
+char currentBit = 'e';
+char dataParite = 'e';
+
+const int LIMIT_VALUE_INPUT_LASER = 200;
+const int TIME_LISTENING_MS = 16;
+const int TIME_WAITING_MS = 20;
 
 void setup()
 {
@@ -39,132 +101,94 @@ void setup()
   pinMode(pininputlaser, INPUT);
 }
 
+void RunFsm()
+{
+  fsm.checkState(PARITE, WAITING, dataTrame[3] == dataTrame[4] && timerPtr->_elapsed() > TIME_LISTENING_MS);
+  fsm.checkState(PARITE, INIT_SEUIL, dataTrame[3] != dataTrame[4] && timerPtr->_elapsed() > TIME_LISTENING_MS);
 
-const int STATE_WAITING = 0;
-const int STATE_BIT_1 = 1;
-const int STATE_BIT_2 = 2;
-const int STATE_BIT_3 = 3;
-const int STATE_DATA_PARITE = 4;
+  fsm.checkState(DATA, PARITE, true);
 
-int currentState = STATE_WAITING;
+  fsm.checkState(BIT_3, DATA, currentBit == '0');
+  fsm.checkState(BIT_3, WAITING, currentBit == '1' && timerPtr->_elapsed() > TIME_LISTENING_MS);
 
-char dataTrame[5];
-int dataTrameIndex = 0;
+  fsm.checkState(BIT_2, BIT_3, currentBit == '1' && timerPtr->_elapsed() > TIME_LISTENING_MS);
+  fsm.checkState(BIT_2, WAITING, currentBit == '0' && timerPtr->_elapsed() > TIME_LISTENING_MS);
 
-char currentBit;
-char dataParite= 'e';
+  fsm.checkState(BIT_1, BIT_2, currentBit == '1' && timerPtr->_elapsed() > TIME_LISTENING_MS);
+  fsm.checkState(BIT_1, WAITING, currentBit == '0' && timerPtr->_elapsed() > TIME_LISTENING_MS);
 
-const int LIMIT_VALUE_INPUT_LASER = 0;
-const int TIME_LISTENING_MS = 16;
-const int TIME_WAITING_MS = 20;
+  fsm.checkState(WAITING, BIT_1, true);
+
+  // TODO : Implementer une methode pour initier le seuil
+  fsm.checkState(INIT_SEUIL, WAITING, true);
+}
+
+void getCurrentBit()
+{
+  timerPtr->start();
+
+  while (timerPtr->_elapsed() < TIME_LISTENING_MS)
+  {
+    int analogValue = analogRead(pininputlaser);
+    //// Serial.println(analogValue);
+    if (analogValue > LIMIT_VALUE_INPUT_LASER)
+    {
+      currentBit = '1';
+      delay(TIME_WAITING_MS);
+    }
+    else
+    {
+      currentBit = '0';
+    }
+  }
+}
+
+void resetDataTrame()
+{
+  dataTrame[0] = 'e';
+  dataTrame[1] = 'e';
+  dataTrame[2] = 'e';
+  dataTrame[3] = 'e';
+  dataTrame[4] = 'e';
+}
 
 void loop()
 {
+  RunFsm();
 
-  int analogValue= analogRead(pininputlaser);  
-  
-  // Choix de l'état
-  switch (currentState)
+  switch (fsm.getCurrentState())
   {
-    case STATE_WAITING:
-      //Récupération du bit actuel pendant 16ms
-      timerPtr->start();
-      while (timerPtr -> _elapsed() < TIME_LISTENING_MS) {
-        analogValue = analogRead(pininputlaser);
-        //Serial.println(analogValue);
-        if (analogValue > LIMIT_VALUE_INPUT_LASER) {
-          currentBit = '1';
-          delay(TIME_WAITING_MS);
-        } else {
-          currentBit = '0';
-        }
-      }
+  case INIT_SEUIL:
+    break;
+  case WAITING:
+    resetDataTrame();
+    break;
+  case BIT_1:
+    getCurrentBit();
+    dataTrame[0] = currentBit;
+    break;
+  case BIT_2:
+    getCurrentBit();
+    dataTrame[1] = currentBit;
+    break;
+  case BIT_3:
+    getCurrentBit();
+    dataTrame[2] = currentBit;
+    break;
+  case DATA:
+    getCurrentBit();
+    dataTrame[3] = currentBit;
+    break;
+  case PARITE:
+    getCurrentBit();
+    dataTrame[4] = currentBit;
+    if (dataTrame[3] != dataTrame[4])
+    {
+      Serial.println("########################");
+      Serial.println(dataTrame);
+      Serial.println("########################");
+    }
 
-      //Définition de l'état suivant en fonction de l'index de la trame
-      switch (dataTrameIndex)
-      {
-        case 0:
-          currentState = STATE_BIT_1;
-          //Serial.println("STATE_BIT_1");
-          break;
-        case 1:
-          currentState = STATE_BIT_2;
-          //Serial.println("STATE_BIT_2");
-          break;
-        case 2:
-          currentState = STATE_BIT_3;
-          //Serial.println("STATE_BIT_3");
-          break;
-        case 3:
-        case 4:
-          currentState = STATE_DATA_PARITE;
-          Serial.println("STATE_DATA_PARITE");
-          break;  
-        default:
-          dataTrameIndex = 0;
-          break;
-      }
-      break;
-    case STATE_BIT_1:
-      //On vérifie le premier bit de la trame depart
-      if(currentBit == '1') {
-        dataTrame[0] = currentBit;
-        dataTrameIndex++;
-      } else {
-        dataTrameIndex = 0;
-      }
-      // Serial.println("############STATE_BIT_1############");
-      // Serial.println(currentBit);
-      // Serial.println("########################");
-      currentState = STATE_WAITING;
-      break;
-    case STATE_BIT_2:
-      //On vérifie le deuxième bit de la trame depart
-      if(currentBit == '1') {
-        dataTrame[1] = currentBit;
-        dataTrameIndex++;
-      } else {
-        dataTrameIndex =0;
-      }
-      // Serial.println("###########STATE_BIT_2#############");
-      // Serial.println(currentBit);
-      // Serial.println("########################");
-      currentState = STATE_WAITING;
-      break;
-    case STATE_BIT_3:
-      //On vérifie le troisième bit de la trame depart
-      if(currentBit == '0') {
-        dataTrame[2] = currentBit;
-        dataTrameIndex++;
-      } else {
-        dataTrameIndex =0;
-      }
-      // Serial.println("#############STATE_BIT_3###########");
-      // Serial.println(currentBit);
-      // Serial.println("########################");
-      currentState = STATE_WAITING;
-      break;
-    case STATE_DATA_PARITE:
-      if (dataTrameIndex == 3) {
-        //Si on est à l'index 3, on récupère la data
-        dataParite = currentBit;
-        dataTrame[3] = currentBit;
-        dataTrameIndex++;
-      } else if (dataTrameIndex == 4 && currentBit != dataParite) {
-        //Si on est à l'index 4, on récupère la parité et on vérifie qu'elle est différente de la data, on affiche la trame
-        dataTrame[4] = currentBit;
-        dataTrameIndex = 0;
-        Serial.println("########################");
-        Serial.println(dataTrame);
-        Serial.println("########################");
-      } else {
-        //Si la parité est égale à la data, on reset la state machine
-        dataTrameIndex = 0;
-      }
-      currentState = STATE_WAITING;
-      break;
-    default:
-      break;
+    break;
   }
-
 }
